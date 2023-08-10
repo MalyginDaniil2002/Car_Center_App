@@ -1,0 +1,319 @@
+Запросы для создания базы данных:
+    CREATE SCHEMA Авто;
+    CREATE TABLE Авто.Клиенты(
+    Номер_клиента serial PRIMARY KEY,
+    ФИО varchar,
+    Город varchar,
+    Адрес varchar,
+    Телефон varchar
+    );
+    CREATE TABLE Авто.Филиалы(
+    Номер_филиала serial PRIMARY KEY,
+    Город varchar,
+    Адрес varchar,
+    Телефон varchar
+    );
+    CREATE TABLE Авто.Поставщики(
+    Номер_поставщика serial PRIMARY KEY,
+    Наименование varchar,
+    Город varchar,
+    Адрес varchar,
+    Телефон varchar,
+    Рейтинг integer
+    );
+    CREATE TABLE Авто.Наименования_Товаров(
+    Код_имени serial PRIMARY KEY,
+    Фирма varchar,
+    Модель varchar
+    );
+    CREATE TABLE Авто.Товары(
+    Код_товара varchar PRIMARY KEY,
+    Наименование serial REFERENCES Авто.Наименования_Товаров(Код_имени),
+    Цвет varchar,
+    Изготовлено date,
+    Текущая_цена numeric DEFAULT 0
+    );
+    CREATE TABLE Авто.Должности(
+    Номер_должности serial PRIMARY KEY,
+    Название_должности varchar,
+    Оклад numeric DEFAULT 0
+    );
+    CREATE TABLE Авто.Сотрудники(
+    Табельный_номер varchar PRIMARY KEY,
+    ФИО varchar,
+    Дата_рождения date,
+    Пол varchar(1),
+    Телефон varchar,
+    Паспортные_данные varchar,
+    ИНН varchar(12),
+    Должность serial REFERENCES Авто.Должности(Номер_должности)
+    );
+    CREATE TABLE Авто.Ассортимент_Филиалов(
+    Филиал serial REFERENCES Авто.Филиалы(Номер_филиала),
+    Товар varchar REFERENCES Авто.Товары(Код_товара),
+    Наличие bool,
+    UNIQUE(Филиал, Товар)
+    );
+    CREATE TABLE Авто.Продажи(
+    Номер_продажи serial PRIMARY KEY,
+    Товар varchar REFERENCES Авто.Товары(Код_товара),
+    Филиал serial REFERENCES Авто.Филиалы(Номер_филиала),
+    Клиент serial REFERENCES Авто.Клиенты(Номер_клиента),
+    Подписано date,
+    Доставлено date CHECK (Доставлено >= Подписано),
+    Менеджер varchar REFERENCES Авто.Сотрудники(Табельный_номер),
+    Стоимость numeric DEFAULT 0
+    );
+    CREATE TABLE Авто.Поставки(
+    Номер_поставки serial PRIMARY KEY,
+    Товар varchar REFERENCES Авто.Товары(Код_товара),
+    Филиал serial REFERENCES Авто.Филиалы(Номер_филиала),
+    Поставщик serial REFERENCES Авто.Поставщики(Номер_поставщика),
+    Подписано date,
+    Доставлено date CHECK (Доставлено >= Подписано),
+    Менеджер varchar REFERENCES Авто.Сотрудники(Табельный_номер),
+    Стоимость numeric DEFAULT 0
+    );
+Запросы для удаления ограничений на значение «NULL» в нужных таблицах:
+    ALTER TABLE Авто.Продажи ALTER COLUMN Филиал DROP NOT NULL;
+    ALTER TABLE Авто.Продажи ALTER COLUMN Клиент DROP NOT NULL;
+    ALTER TABLE Авто.Поставки ALTER COLUMN Филиал DROP NOT NULL;
+    ALTER TABLE Авто.Поставки ALTER COLUMN Поставщик DROP NOT NULL;
+Запросы для создания триггеров и соответствующими им функциями:
+    CREATE OR REPLACE FUNCTION Авто.before_insert_sales_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT Наличие FROM Авто.Ассортимент_Филиалов WHERE Товар = NEW.Товар AND Филиал = NEW.Филиал) = true THEN
+    RETURN NEW;
+    ELSE
+    RETURN null;
+    END IF;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER insert_sales_trigger
+    BEFORE INSERT ON Авто.Продажи
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.before_insert_sales_function();
+    CREATE OR REPLACE FUNCTION Авто.after_insert_sales_function()
+    RETURNS TRIGGER AS
+    $$
+    DECLARE
+    current_price numeric;
+    BEGIN
+    current_price = (
+    SELECT Текущая_цена
+    FROM Авто.Товары
+    WHERE Код_товара = NEW.Товар
+    );
+    UPDATE Авто.Продажи
+    SET Стоимость =  current_price
+    WHERE Номер_продажи = NEW.Номер_продажи;
+    UPDATE Авто.Ассортимент_Филиалов
+    SET Наличие =  '0'
+    WHERE Товар = NEW.Товар and Филиал = NEW.Филиал;
+    RETURN NEW;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER after_insert_sales_trigger
+    AFTER INSERT ON Авто.Продажи
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.after_insert_sales_function();
+    CREATE OR REPLACE FUNCTION Авто.before_insert_deliveries_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT Наличие FROM Авто.Ассортимент_Филиалов WHERE Товар = NEW.Товар and Филиал = NEW.Филиал) = false THEN
+    UPDATE Авто.Ассортимент_Филиалов
+    SET Наличие =  '1'
+    WHERE Товар = NEW.Товар and Филиал = NEW.Филиал;
+    RETURN NEW;
+    ELSE
+    RETURN NULL;
+    END IF;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER before_insert_deliveries_trigger
+    BEFORE INSERT ON Авто.Поставки
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.before_insert_deliveries_function();
+    CREATE OR REPLACE FUNCTION Авто.update_delete_products_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(1) FROM Авто.Ассортимент_Филиалов WHERE Ассортимент_Филиалов.Товар=OLD.Код_товара)<>0 THEN
+    DELETE FROM Авто.Ассортимент_Филиалов WHERE Ассортимент_Филиалов.Товар=OLD.Код_товара;
+    END IF;
+    IF (SELECT COUNT(Номер_продажи) FROM Авто.Продажи WHERE Продажи.Товар=OLD.Код_товара)<>0 THEN
+    UPDATE Авто.Продажи
+    SET Товар=NULL
+    WHERE Продажи.Товар=OLD.Код_товара;
+    END IF;
+    IF (SELECT COUNT(Номер_поставки) FROM Авто.Поставки WHERE Поставки.Менеджер=OLD.Код_товара)<>0 THEN
+    UPDATE Авто.Поставки
+    SET Товар=NULL
+    WHERE Поставки.Товар=OLD.Код_товара;
+    END IF;
+    IF TG_OP = 'UPDATE' THEN
+    RETURN NEW;
+    ELSE
+    RETURN OLD;
+    END IF;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER update_delete_products_trigger
+    BEFORE UPDATE OR DELETE ON Авто.Товары
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.update_delete_products_function();
+    CREATE OR REPLACE FUNCTION Авто.update_delete_workers_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(Номер_продажи) FROM Авто.Продажи WHERE Продажи.Менеджер=OLD.Табельный_номер)<>0 THEN
+    UPDATE Авто.Продажи
+    SET Менеджер=NULL
+    WHERE Продажи.Менеджер=OLD.Табельный_номер;
+    END IF;
+    IF (SELECT COUNT(Номер_поставки) FROM Авто.Поставки WHERE Поставки.Менеджер=OLD.Табельный_номер)<>0 THEN
+    UPDATE Авто.Поставки
+    SET Менеджер=NULL
+    WHERE Поставки.Менеджер=OLD.Табельный_номер;
+    END IF;
+    IF TG_OP = 'UPDATE' THEN
+    RETURN NEW;
+    ELSE
+    RETURN OLD;
+    END IF;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER update_delete_workers_trigger
+    BEFORE UPDATE OR DELETE ON Авто.Сотрудники
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.update_delete_workers_function();
+    CREATE OR REPLACE FUNCTION Авто.delete_clients_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(Номер_продажи) FROM Авто.Продажи WHERE Продажи.Клиент=OLD.Номер_клиента)<>0 THEN
+    UPDATE Авто.Продажи 
+    SET Клиент=Null
+    WHERE Продажи.Клиент=OLD.Номер_клиента;
+    END IF;
+    RETURN OLD;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER delete_clients_trigger
+    BEFORE DELETE ON Авто.Клиенты
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.delete_clients_function();
+    CREATE OR REPLACE FUNCTION Авто.delete_branches_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(1) FROM Авто.Ассортимент_Филиалов WHERE Ассортимент_Филиалов.Филиал=OLD.Номер_филиала)<>0 THEN
+    DELETE FROM Авто.Ассортимент_Филиалов WHERE Ассортимент_Филиалов.Филиал=OLD.Номер_филиала;
+    END IF;
+    IF (SELECT COUNT(Номер_продажи) FROM Авто.Продажи WHERE Продажи.Филиал=OLD.Номер_филиала)<>0 THEN
+    UPDATE Авто.Продажи 
+    SET Филиал=Null
+    WHERE Продажи.Филиал=OLD.Номер_филиала;
+    END IF;
+    IF (SELECT COUNT(Номер_поставки) FROM Авто.Поставки WHERE Поставки.Филиал=OLD.Номер_филиала)<>0 THEN
+    UPDATE Авто.Поставки 
+    SET Филиал=Null
+    WHERE Поставки.Филиал=OLD.Номер_филиала;
+    END IF;
+    RETURN OLD;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER delete_braches_trigger
+    BEFORE DELETE ON Авто.Филиалы
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.delete_branches_function();
+    CREATE OR REPLACE FUNCTION Авто.delete_providers_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(Номер_поставки) FROM Авто.Поставки WHERE Поставки.Поставщик=OLD.Номер_поставщика)<>0 THEN
+    UPDATE Авто.Поставки 
+    SET Поставщик=Null
+    WHERE Поставки.Поставщик=OLD.Номер_поставщика;
+    END IF;
+    RETURN OLD;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER delete_providers_trigger
+    BEFORE DELETE ON Авто.Поставщики
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.delete_providers_function();
+    CREATE OR REPLACE FUNCTION Авто.delete_products_names_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(Код_товара) FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени)<>0 THEN
+    IF (SELECT COUNT(1) FROM Авто.Ассортимент_Филиалов WHERE Ассортимент_Филиалов.Товар IN
+    (SELECT Код_товара FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени))<>0 THEN
+    DELETE FROM Авто.Ассортимент_Филиалов WHERE Ассортимент_Филиалов.Товар IN
+    (SELECT Код_товара FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени);
+    END IF;
+    IF (SELECT COUNT(Номер_продажи) FROM Авто.Продажи WHERE Продажи.Товар IN
+    (SELECT Код_товара FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени))<>0 THEN
+    UPDATE Авто.Продажи 
+    SET Товар=Null
+    WHERE Продажи.Товар IN
+    (SELECT Код_товара FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени);
+    END IF;
+    IF (SELECT COUNT(Номер_поставки) FROM Авто.Поставки WHERE Поставки.Товар IN
+    (SELECT Код_товара FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени))<>0 THEN
+    UPDATE Авто.Поставки 
+    SET Товар=Null
+    WHERE Поставки.Товар IN
+    (SELECT Код_товара FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени);
+    END IF;
+    DELETE FROM Авто.Товары WHERE Товары.Наименование=OLD.Код_имени;
+    END IF;
+    RETURN OLD;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER delete_products_names_trigger
+    BEFORE DELETE ON Авто.Наименования_Товаров
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.delete_products_names_function();
+    CREATE OR REPLACE FUNCTION Авто.delete_posts_function()
+    RETURNS TRIGGER AS
+    $$
+    BEGIN
+    IF (SELECT COUNT(Табельный_номер) FROM Авто.Сотрудники WHERE Сотрудники.Должность=OLD.Номер_должности)<>0 THEN
+    IF (SELECT COUNT(Номер_продажи) FROM Авто.Продажи WHERE Продажи.Менеджер IN
+    (SELECT Табельный_номер FROM Авто.Сотрудники WHERE Сотрудники.Должность=OLD.Номер_должности))<>0 THEN
+    UPDATE Авто.Продажи
+    SET Менеджер=Null
+    WHERE Продажи.Менеджер IN
+    (SELECT Табельный_номер FROM Авто.Сотрудники WHERE Сотрудники.Должность=OLD.Номер_должности);
+    END IF;
+    IF (SELECT COUNT(Номер_поставки) FROM Авто.Поставки WHERE Поставки.Менеджер IN
+    (SELECT Табельный_номер FROM Авто.Сотрудники WHERE Сотрудники.Должность=OLD.Номер_должности))<>0 THEN
+    UPDATE Авто.Поставки
+    SET Менеджер=Null
+    WHERE Поставки.Менеджер IN
+    (SELECT Табельный_номер FROM Авто.Сотрудники WHERE Сотрудники.Должность=OLD.Номер_должности);
+    END IF;
+    DELETE FROM Авто.Сотрудники WHERE Сотрудники.Должность=OLD.Номер_должности;
+    END IF;
+    RETURN OLD;
+    END;
+    $$
+    LANGUAGE 'plpgsql';
+    CREATE TRIGGER delete_posts_trigger
+    BEFORE DELETE ON Авто.Должности
+    FOR EACH ROW
+    EXECUTE FUNCTION Авто.delete_posts_function();
